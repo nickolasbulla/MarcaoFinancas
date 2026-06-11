@@ -100,10 +100,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _loadApiKey() async {
     final prefs = await SharedPreferences.getInstance();
-    const compiledKey = String.fromEnvironment('GEMINI_KEY', defaultValue: '');
-    final savedKey = prefs.getString('gemini_api_key') ?? '';
+    const compiledKey = String.fromEnvironment('GROQ_KEY', defaultValue: '');
+    final savedKey = prefs.getString('groq_api_key') ?? '';
     final key = savedKey.isNotEmpty ? savedKey : compiledKey;
-    if (key.isNotEmpty && savedKey.isEmpty) await prefs.setString('gemini_api_key', key);
+    if (key.isNotEmpty && savedKey.isEmpty) await prefs.setString('groq_api_key', key);
     if (key.isNotEmpty) {
       setState(() {
         _ai = AiService(apiKey: key);
@@ -125,7 +125,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _saveApiKey(String key) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('gemini_api_key', key);
+    await prefs.setString('groq_api_key', key);
     setState(() {
       _ai = AiService(apiKey: key);
       _apiKeySet = true;
@@ -143,7 +143,7 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       barrierDismissible: hasKey,
       builder: (ctx) => AlertDialog(
-        title: const Text('API Key do Gemini'),
+        title: const Text('API Key do Groq'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -182,12 +182,12 @@ class _ChatScreenState extends State<ChatScreen> {
               const Text('Para trocar, insira uma nova chave abaixo:'),
             ] else ...[
               const Text(
-                'Para usar o assistente financeiro, insira sua API key gratuita do Google Gemini.',
+                'Para usar o assistente financeiro, insira sua API key gratuita do Groq.',
               ),
             ],
             const SizedBox(height: 8),
             const Text(
-              'Obtenha gratuitamente em: aistudio.google.com',
+              'Obtenha gratuitamente em: console.groq.com',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 16),

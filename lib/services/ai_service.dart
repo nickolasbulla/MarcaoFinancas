@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import '../database/neon_helper.dart';
 import '../models/expense.dart';
@@ -20,8 +20,14 @@ class AiResponse {
 
 class AiService {
   final String apiKey;
-  late final GenerativeModel _model;
-  late ChatSession _chat;
+  final List<Map<String, dynamic>> _history = [];
+
+  static const _baseUrl = 'https://api.groq.com/openai/v1/chat/completions';
+  static const _model = 'openai/gpt-oss-120b';
+
+  AiService({required this.apiKey}) {
+    _resetHistory();
+  }
 
   static String _buildSystemPrompt() {
     final now = DateTime.now();
@@ -66,106 +72,140 @@ CATEGORIAS E PALAVRAS-CHAVE:
 - educação: curso, livro, escola, faculdade, material
 - roupas: roupa, sapato, tênis, camisa, calça, acessório
 - assinaturas: Netflix, Spotify, Amazon, aplicativo, assinatura
+- imprevistos: conserto, reparo, multa, emergência, imprevisto, quebrou, estragou, vazamento, acidente, urgência
 - outros: qualquer coisa que não se encaixe acima, incluindo pets
 ''';
   }
 
-  static final _tools = [
-    Tool(functionDeclarations: [
-      FunctionDeclaration(
-        'save_expense',
-        'Salva um gasto no banco de dados local.',
-        Schema(SchemaType.object, properties: {
-          'description': Schema(SchemaType.string, description: 'Descrição do gasto'),
-          'amount': Schema(SchemaType.number, description: 'Valor em reais'),
-          'category': Schema(SchemaType.string,
-              description:
-                  'Categoria: alimentação, transporte, moradia, saúde, lazer, educação, roupas, assinaturas, ou outros'),
-          'date': Schema(SchemaType.string,
-              description: 'Data e hora no formato YYYY-MM-DDTHH:MM:SS. Use o momento exato atual se não informado.'),
-        }, requiredProperties: [
-          'description',
-          'amount',
-          'category',
-          'date'
-        ]),
-      ),
-      FunctionDeclaration(
-        'get_expenses',
-        'Busca todos os gastos de um mês/ano específico, opcionalmente filtrando por categoria.',
-        Schema(SchemaType.object, properties: {
-          'month': Schema(SchemaType.integer,
-              description: 'Mês (1-12). Padrão: mês atual.'),
-          'year': Schema(SchemaType.integer,
-              description: 'Ano (ex: 2025). Padrão: ano atual.'),
-          'category': Schema(SchemaType.string,
-              description: 'Filtrar por categoria específica (opcional).'),
-        }),
-      ),
-      FunctionDeclaration(
-        'get_total_by_category',
-        'Retorna o total gasto por categoria em um mês.',
-        Schema(SchemaType.object, properties: {
-          'month': Schema(SchemaType.integer, description: 'Mês (1-12). Padrão: mês atual.'),
-          'year': Schema(SchemaType.integer, description: 'Ano. Padrão: ano atual.'),
-        }),
-      ),
-      FunctionDeclaration(
-        'get_total_spent',
-        'Retorna o total gasto em um mês.',
-        Schema(SchemaType.object, properties: {
-          'month': Schema(SchemaType.integer, description: 'Mês (1-12). Padrão: mês atual.'),
-          'year': Schema(SchemaType.integer, description: 'Ano. Padrão: ano atual.'),
-        }),
-      ),
-      FunctionDeclaration(
-        'delete_expense',
-        'Remove um gasto pelo ID. Use get_expenses primeiro para encontrar o ID correto.',
-        Schema(SchemaType.object, properties: {
-          'id': Schema(SchemaType.integer, description: 'ID do gasto a ser removido.'),
-        }, requiredProperties: ['id']),
-      ),
-    ]),
+  static const _tools = [
+    {
+      'type': 'function',
+      'function': {
+        'name': 'save_expense',
+        'description': 'Salva um gasto no banco de dados local.',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'description': {'type': 'string', 'description': 'Descrição do gasto'},
+            'amount': {'type': 'number', 'description': 'Valor em reais'},
+            'category': {
+              'type': 'string',
+              'description': 'Categoria: alimentação, transporte, moradia, saúde, lazer, educação, roupas, assinaturas, imprevistos, ou outros',
+            },
+            'date': {
+              'type': 'string',
+              'description': 'Data e hora no formato YYYY-MM-DDTHH:MM:SS. Use o momento exato atual se não informado.',
+            },
+          },
+          'required': ['description', 'amount', 'category', 'date'],
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'get_expenses',
+        'description': 'Busca todos os gastos de um mês/ano específico, opcionalmente filtrando por categoria.',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'month': {'type': 'integer', 'description': 'Mês (1-12). Padrão: mês atual.'},
+            'year': {'type': 'integer', 'description': 'Ano (ex: 2025). Padrão: ano atual.'},
+            'category': {'type': 'string', 'description': 'Filtrar por categoria específica (opcional).'},
+          },
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'get_total_by_category',
+        'description': 'Retorna o total gasto por categoria em um mês.',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'month': {'type': 'integer', 'description': 'Mês (1-12). Padrão: mês atual.'},
+            'year': {'type': 'integer', 'description': 'Ano. Padrão: ano atual.'},
+          },
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'get_total_spent',
+        'description': 'Retorna o total gasto em um mês.',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'month': {'type': 'integer', 'description': 'Mês (1-12). Padrão: mês atual.'},
+            'year': {'type': 'integer', 'description': 'Ano. Padrão: ano atual.'},
+          },
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'delete_expense',
+        'description': 'Remove um gasto pelo ID. Use get_expenses primeiro para encontrar o ID correto.',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'integer', 'description': 'ID do gasto a ser removido.'},
+          },
+          'required': ['id'],
+        },
+      },
+    },
   ];
 
-  AiService({required this.apiKey}) {
-    _model = GenerativeModel(
-      model: 'gemini-2.5-flash',
-      apiKey: apiKey,
-      tools: _tools,
-      systemInstruction: Content.system(_buildSystemPrompt()),
-    );
-    _chat = _model.startChat();
-  }
-
-  static int _parseRetrySeconds(String error) {
-    final match = RegExp(r'retry in (\d+)').firstMatch(error);
-    return (match != null ? int.parse(match.group(1)!) : 60) + 2;
+  void _resetHistory() {
+    _history.clear();
+    _history.add({'role': 'system', 'content': _buildSystemPrompt()});
   }
 
   static bool _isRetryable(String msg) {
     return msg.contains('429') ||
         msg.contains('quota') ||
-        msg.contains('RESOURCE_EXHAUSTED') ||
-        msg.contains('high demand') ||
+        msg.contains('rate_limit') ||
         msg.contains('503') ||
-        msg.contains('UNAVAILABLE') ||
         msg.contains('overloaded');
   }
 
-  Future<GenerateContentResponse> _sendWithRetry(Content content) async {
+  Future<Map<String, dynamic>> _callApi() async {
+    final response = await http
+        .post(
+          Uri.parse(_baseUrl),
+          headers: {
+            'Authorization': 'Bearer $apiKey',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'model': _model,
+            'messages': _history,
+            'tools': _tools,
+            'tool_choice': 'auto',
+            'parallel_tool_calls': false,
+          }),
+        )
+        .timeout(const Duration(seconds: 40));
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Groq error ${response.statusCode}: ${response.body}');
+  }
+
+  Future<Map<String, dynamic>> _callApiWithRetry() async {
     for (int attempt = 0; attempt < 3; attempt++) {
       try {
-        return await _chat
-            .sendMessage(content)
-            .timeout(const Duration(seconds: 40));
+        return await _callApi();
       } catch (e) {
         final msg = e.toString();
         if (_isRetryable(msg)) {
           if (attempt == 2) rethrow;
-          final isRateLimit = msg.contains('429') || msg.contains('quota') || msg.contains('RESOURCE_EXHAUSTED');
-          final wait = isRateLimit ? _parseRetrySeconds(msg) : (8 * (attempt + 1));
-          await Future.delayed(Duration(seconds: wait));
+          await Future.delayed(Duration(seconds: 8 * (attempt + 1)));
         } else {
           rethrow;
         }
@@ -175,60 +215,67 @@ CATEGORIAS E PALAVRAS-CHAVE:
   }
 
   Future<AiResponse> sendMessage(String userMessage) async {
+    // Atualiza o timestamp do system prompt a cada mensagem
+    _history[0] = {'role': 'system', 'content': _buildSystemPrompt()};
+    _history.add({'role': 'user', 'content': userMessage});
+
     List<Expense>? chartExpenses;
     Map<String, double>? chartCategories;
     bool expenseSaved = false;
     String? expenseFormattedList;
     bool deleteCalled = false;
 
-    var response = await _sendWithRetry(Content.text(userMessage));
+    while (true) {
+      final data = await _callApiWithRetry();
+      final message = (data['choices'] as List).first['message'] as Map<String, dynamic>;
+      final toolCalls = message['tool_calls'] as List?;
 
-    // Loop para processar function calls
-    while (response.functionCalls.isNotEmpty) {
-      final functionResults = <FunctionResponse>[];
+      if (toolCalls == null || toolCalls.isEmpty) {
+        _history.add(message);
+        final String text;
+        if (expenseFormattedList != null && expenseFormattedList.isNotEmpty && !deleteCalled) {
+          final count = chartExpenses?.length ?? 0;
+          text = 'Encontrei **$count gasto${count != 1 ? 's' : ''}**:\n\n$expenseFormattedList';
+        } else {
+          text = message['content'] as String? ?? 'Não consegui processar sua mensagem.';
+        }
+        return AiResponse(
+          text: text,
+          expensesForChart: chartExpenses,
+          categoryTotalsForChart: chartCategories,
+          expenseSaved: expenseSaved,
+        );
+      }
 
-      for (final call in response.functionCalls) {
-        final result = await _handleFunctionCall(call);
+      _history.add(message);
 
-        if (call.name == 'save_expense') expenseSaved = true;
-        if (call.name == 'get_expenses') {
+      for (final toolCall in toolCalls) {
+        final id = toolCall['id'] as String;
+        final name = toolCall['function']['name'] as String;
+        final args = jsonDecode(toolCall['function']['arguments'] as String) as Map<String, dynamic>;
+        final result = await _handleFunctionCall(name, args);
+
+        if (name == 'save_expense') expenseSaved = true;
+        if (name == 'get_expenses') {
           chartExpenses = result['expenses'] as List<Expense>?;
           expenseFormattedList = result['formatted_list'] as String?;
         }
-        if (call.name == 'get_total_by_category') {
+        if (name == 'get_total_by_category') {
           chartCategories = result['totals'] as Map<String, double>?;
         }
-        if (call.name == 'delete_expense') {
-          deleteCalled = true;
-        }
+        if (name == 'delete_expense') deleteCalled = true;
 
-        functionResults.add(FunctionResponse(call.name, result['json']));
+        _history.add({
+          'role': 'tool',
+          'tool_call_id': id,
+          'content': jsonEncode(result['json']),
+        });
       }
-
-      response = await _sendWithRetry(Content.functionResponses(functionResults));
     }
-
-    // Usa a lista formatada pelo código ao invés do texto da IA (que reformata incorretamente)
-    final String text;
-    if (expenseFormattedList != null && expenseFormattedList.isNotEmpty && !deleteCalled) {
-      final count = chartExpenses?.length ?? 0;
-      text = 'Encontrei **$count gasto${count != 1 ? 's' : ''}**:\n\n$expenseFormattedList';
-    } else {
-      text = response.text ?? 'Não consegui processar sua mensagem.';
-    }
-
-    return AiResponse(
-      text: text,
-      expensesForChart: chartExpenses,
-      categoryTotalsForChart: chartCategories,
-      expenseSaved: expenseSaved,
-    );
   }
 
-  Future<Map<String, dynamic>> _handleFunctionCall(FunctionCall call) async {
-    final args = call.args;
-
-    switch (call.name) {
+  Future<Map<String, dynamic>> _handleFunctionCall(String name, Map<String, dynamic> args) async {
+    switch (name) {
       case 'save_expense':
         final parsedDate = DateTime.parse(args['date'] as String);
         final expense = Expense(
@@ -255,31 +302,23 @@ CATEGORIAS E PALAVRAS-CHAVE:
                   'amount': e.amount,
                   'category': e.category,
                   'date': DateFormat('dd/MM/yyyy').format(e.date),
-                  'horario': e.createdAt != null
-                      ? DateFormat('HH:mm').format(e.createdAt!)
-                      : 'não registrado',
+                  'horario': DateFormat('HH:mm').format(e.createdAt),
                 })
             .toList();
 
         final sb = StringBuffer();
         for (final e in expenses) {
-          final amount = NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$')
-              .format(e.amount);
+          final amount = NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$').format(e.amount);
           final date = DateFormat('dd/MM/yyyy').format(e.date);
-          final time = e.createdAt != null
-              ? DateFormat('HH:mm').format(e.createdAt!)
-              : '';
+          final time = DateFormat('HH:mm').format(e.createdAt);
           sb.write('- **$amount** em ${e.description} (${e.category})  \n');
-          sb.write('  _${date} às ${time}_\n');
+          sb.write('  _$date às ${time}_\n');
         }
 
         return {
           'expenses': expenses,
           'formatted_list': sb.toString(),
-          'json': {
-            'expenses': expenseList,
-            'count': expenses.length,
-          },
+          'json': {'expenses': expenseList, 'count': expenses.length},
         };
 
       case 'get_total_by_category':
@@ -309,9 +348,9 @@ CATEGORIAS E PALAVRAS-CHAVE:
         };
 
       default:
-        return {'json': {'error': 'Função desconhecida: ${call.name}'}};
+        return {'json': {'error': 'Função desconhecida: $name'}};
     }
   }
 
-  void clearHistory() => _chat = _model.startChat();
+  void clearHistory() => _resetHistory();
 }
